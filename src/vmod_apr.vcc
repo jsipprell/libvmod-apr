@@ -1,0 +1,3 @@
+Module apr
+Init init_function
+Function VOID init(PRIV_VCL)
