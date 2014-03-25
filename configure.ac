@@ -38,14 +38,20 @@ AC_CHECK_PROGS(PYTHON, [python3 python3.1 python3.2 python2.7 python2.6 python2.
   [AC_MSG_ERROR([Python is needed to build this vmod, please install python.])])
 
 # Varnish source tree
+AC_ARG_WITH([varnish],
+  [AS_HELP_STRING([--with-varnish=DIR],
+                 [location of varnish source code @<:@REQUIRED@:>@])],
+  [varnish_srcdir="$withval"
+   VARNISHSRC=])
+
 AC_ARG_VAR([VARNISHSRC], [path to Varnish source tree (mandatory)])
-if test "x$VARNISHSRC" = x; then
-  AC_MSG_ERROR([No Varnish source tree specified])
-fi
-VARNISHSRC=`cd $VARNISHSRC && pwd`
-AC_CHECK_FILE([$VARNISHSRC/include/varnishapi.h],
+AS_VAR_IF([VARNISHSRC],[""],[],[varnish_srcdir="$VARNISHSRC"])
+AS_VAR_IF([varnish_srcdir],[""],[AC_MSG_ERROR([No Varnish source tree specified])])
+
+VARNISHSRC=`cd $varnish_srcdir && pwd`
+AC_CHECK_FILE([$varnish_srcdir/include/varnishapi.h],
   [],
-  [AC_MSG_FAILURE(["$VARNISHSRC" is not a Varnish source directory])]
+  [AC_MSG_FAILURE(["$varnish_srcdir" is not a Varnish source directory])]
 )
 
 # vmod installation dir
@@ -56,5 +62,5 @@ if test "x$VMODDIR" = x; then
     AC_MSG_FAILURE([Can't determine vmod installation directory])
   fi
 fi
-
+AC_SUBST([VARNISHSRC],[$varnish_srcdir])
 AC_OUTPUT([Makefile src/Makefile])
