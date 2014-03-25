@@ -48,11 +48,25 @@ AC_ARG_VAR([VARNISHSRC], [path to Varnish source tree (mandatory)])
 AS_VAR_IF([VARNISHSRC],[""],[],[varnish_srcdir="$VARNISHSRC"])
 AS_VAR_IF([varnish_srcdir],[""],[AC_MSG_ERROR([No Varnish source tree specified])])
 
-VARNISHSRC=`cd $varnish_srcdir && pwd`
+AS_IF([test -d "$varnish_srcdir"],[],
+  [AC_MSG_ERROR([$varnish_srcdir is not a valid directory])])
+
+varnish_srcdir=`cd $varnish_srcdir && pwd`
 AC_CHECK_FILE([$varnish_srcdir/include/varnishapi.h],
   [],
   [AC_MSG_FAILURE(["$varnish_srcdir" is not a Varnish source directory])]
 )
+
+APR_FIND_APR([],[],[1],[1])
+AS_VAR_IF([apr_found],[yes],
+  [APR_CFLAGS="`$apr_config --cflags`"
+   APR_CPPFLAGS="`$apr_config --cppflags`"
+   APR_LIBS="`$apr_config --ldflags --link-ld --libs`"],
+  [AC_MSG_ERROR([cannot find the Apache Portable Runtime library])])
+APR_FIND_APU([],[],[1],[1])
+AS_VAR_IF([apu_found],[yes],
+  [APR_UTIL_LIBS=`$apu_config --ldflags --link-ld`""],
+  [AC_MSG_ERROR([cannot find the Apache Portable Runtime Utility library])])
 
 # vmod installation dir
 AC_ARG_VAR([VMODDIR], [vmod installation directory @<:@LIBDIR/varnish/vmods@:>@])
@@ -62,5 +76,11 @@ if test "x$VMODDIR" = x; then
     AC_MSG_FAILURE([Can't determine vmod installation directory])
   fi
 fi
+
 AC_SUBST([VARNISHSRC],[$varnish_srcdir])
+AC_SUBST([APR_CFLAGS])
+AC_SUBST([APR_CPPFLAGS])
+AC_SUBST([APR_LIBS])
+AC_SUBST([APR_UTIL_LIBS])
+
 AC_OUTPUT([Makefile src/Makefile])

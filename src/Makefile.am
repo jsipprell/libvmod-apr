@@ -3,8 +3,10 @@ AM_CPPFLAGS = -I$(VARNISHSRC)/include -I$(VARNISHSRC) -I/usr/local/include
 vmoddir = $(VMODDIR)
 vmod_LTLIBRARIES = libvmod_apr.la
 
+libvmod_apr_la_CPPFLAGS = @APR_CPPFLAGS@ $(AM_CPPFLAGS)
+libvmod_apr_la_CFLAGS = @APR_CFLAGS@
 libvmod_apr_la_LDFLAGS = -module -export-dynamic -avoid-version
-
+libvmod_apr_la_LIBADD = @APR_LIBS@ @APR_UTIL_LIBS@
 libvmod_apr_la_SOURCES = \
   vcc_if.c \
   vcc_if.h \
