@@ -1,11 +1,4 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/time.h>
-
-#include "vrt.h"
-#include "bin/varnishd/cache.h"
-
-#include "vcc_if.h"
+#include "vmod_apr.h"
 
 #define LOG_E(...) fprintf(stderr, __VA_ARGS__);
 #ifdef DEBUG

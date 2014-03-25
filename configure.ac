@@ -60,7 +60,7 @@ AC_CHECK_FILE([$varnish_srcdir/include/varnishapi.h],
 APR_FIND_APR([],[],[1],[1])
 AS_VAR_IF([apr_found],[yes],
   [APR_CFLAGS="`$apr_config --cflags`"
-   APR_CPPFLAGS="`$apr_config --cppflags`"
+   APR_CPPFLAGS="`$apr_config --cppflags` `$apr_config --includes`"
    APR_LIBS="`$apr_config --ldflags --link-ld --libs`"],
   [AC_MSG_ERROR([cannot find the Apache Portable Runtime library])])
 APR_FIND_APU([],[],[1],[1])
