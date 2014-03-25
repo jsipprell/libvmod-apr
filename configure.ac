@@ -25,6 +25,11 @@ AC_PROG_CPP
 AC_PROG_INSTALL
 AC_PROG_LIBTOOL
 AC_PROG_MAKE_SET
+AC_ARG_ENABLE([debug],
+  [AS_HELP_STRING([--enable-debug],
+                  [turn on full symbol generation, disable optimization and out debug messages])],
+  [CFLAGS="-ggdb3 -Wall"
+   CPPFLAGS="$CPPFLAGS${CPPFLAGS:+ }-DDEBUG"])
 
 # Check for pkg-config
 PKG_PROG_PKG_CONFIG
