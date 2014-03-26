@@ -122,10 +122,15 @@ static apr_status_t finalize(void *last)
 {
   apr_pool_t **p = (apr_pool_t**)last;
 
+  LOG_T("FINALIZE\n");
   if(p && *p && *p == global_pool) {
     global_mutex = NULL;
     global_pool = NULL;
+    LOG_T("APR TERMINATION\n");
     apr_terminate();
+  } else {
+    LOG_E("vmod_apr is unable to unload the Apache Portable Runtime as there are still resources in use. "
+          "\nThis is an error.\n");
   }
 
   return APR_SUCCESS;
