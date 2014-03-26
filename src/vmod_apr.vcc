@@ -2,6 +2,5 @@ Module apr
 Init init_function
 Function VOID init(PRIV_VCL)
 Function STRING get(PRIV_VCL, STRING)
-Function VOID set(PRIV_VCL, STRING, STRING)
+Function VOID set(PRIV_VCL, STRING, STRING_LIST)
 Function VOID del(PRIV_VCL, STRING)
-Function VOID format(PRIV_VCL, STRING, STRING_LIST)

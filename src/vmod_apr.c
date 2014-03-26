@@ -7,6 +7,13 @@
 # define LOG_T(...) do {} while(0);
 #endif
 
+
+#ifdef DEBUG
+#define begin_csession begin_csession_debug
+#else
+#define begin_csession(sp,priv,cfgp,fn_name) begin_csession_ndebug((sp),(priv),(cfgp))
+#endif /* DEBUG */
+
 #define CLEANUP(p,v,f) apr_pool_cleanup_register((p),(v),(f),apr_pool_cleanup_null)
 #define KILL_CLEANUP(p,v,f) apr_pool_cleanup_kill((p),(v),(f))
 #define CLEANUP_RUN(p,v,f) apr_pool_cleanup_run((p),(v),(f))
@@ -14,7 +21,13 @@
 #define KILL_INDIRECT_CLEANUP(p,v) KILL_CLEANUP((p),&(v),indirect_wipe)
 
 #define BEGIN_SESSION(sp) WS_Reserve((sp)->wrk->ws,0); do
+#define BEGIN_CSESSION(sp,priv,cfg,decl) BEGIN_SESSION(sp) { \
+    decl = begin_csession((sp),(priv),&(cfg),NULL); do
+#define BEGIN_CSESSION_FN(fn,sp,priv,cfg,decl) BEGIN_SESSION(sp) { \
+    decl = begin_csession((sp),(priv),&(cfg),(fn)); do
+
 #define END_SESSION(sp) while(0); WS_Release((sp)->wrk->ws,0)
+#define END_CSESSION(sp,cfg) while(0); end_csession(cfg); } END_SESSION(sp)
 
 static apr_status_t indirect_wipe(void*);
 
@@ -41,16 +54,6 @@ static inline void set_empty_session(apr_session_t *s)
   s->id = s->xid = APR_INT64_C(-1);
 }
 
-static apr_status_t decr_refcount(void *c)
-{
-  if(c) {
-    if(apr_atomic_dec32(&(((apr_config_t*)c))->refcount) == 0) {
-      LOG_T("config refcount decremented to zero via session subpool\n");
-    }
-  }
-  return APR_SUCCESS;
-}
-
 static apr_int64_t set_session(const struct sess *sp, apr_session_t *s, apr_config_t *cfg)
 {
   apr_int64_t i = APR_INT64_C(-1);
@@ -66,15 +69,12 @@ static apr_int64_t set_session(const struct sess *sp, apr_session_t *s, apr_conf
 
   if(s->pool) {
     KILL_INDIRECT_CLEANUP(s->pool,s->pool);
-    apr_atomic_inc32(&cfg->refcount);
     apr_pool_clear(s->pool);
   } else {
     AN(cfg);
     AN(cfg->pool);
     ASSERT_APR(apr_pool_create(&s->pool,cfg->pool));
-    apr_atomic_inc32(&cfg->refcount);
   }
-  CLEANUP(s->pool,cfg,decr_refcount);
   INDIRECT_CLEANUP(s->pool,s->pool);
   if(sp) {
     i = s->id = sp->id;
@@ -184,7 +184,7 @@ static void free_config(apr_config_t *cfg)
 
   if(cfg) {
     apr_uint32_t rc = apr_atomic_read32(&cfg->refcount);
-    assert(rc < 2);
+    assert(rc < 1);
     if(apr_atomic_dec32(&total_configs) == 0)
       apr_pool_destroy(global_pool);
     else {
@@ -217,6 +217,59 @@ int init_function(struct vmod_priv *priv, const struct VCL_conf *conf)
   return 0;
 }
 
+#ifdef DEBUG
+static inline apr_session_t *begin_csession_debug(struct sess *sp, struct vmod_priv *priv,
+                                                            apr_config_t **cfgp,
+                                                            const char *fn_name)
+#else
+static inline apr_session_t *begin_csession_ndebug(struct sess *sp, struct vmod_priv *priv,
+                                                            apr_config_t **cfgp)
+#endif
+{
+  apr_config_t *cfg;
+
+  if(!priv->priv) {
+#ifdef DEBUG
+    LOG_T("%s: no priv->priv\n",fn_name);
+#endif
+    priv->priv = make_config();
+  }
+#ifdef DEBUG
+  if(!priv->free) {
+    LOG_T("%s: no priv->free\n",fn_name);
+    priv->free = (vmod_priv_free_f*)free_config;
+  }
+#endif
+  AN(cfg = (apr_config_t*)priv->priv);
+  if(cfgp)
+    *cfgp = cfg;
+  apr_atomic_inc32(&cfg->refcount);
+#ifdef DEBUG
+  do {
+    apr_session_t *s = get_session(sp,cfg);
+    AN(s);
+    return s;
+  } while(0);
+#else
+  return get_session(sp,cfg);
+#endif
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+static inline void end_session(struct vmod_priv *priv)
+{
+  AN(priv->priv);
+  apr_atomic_dec32(&((apr_config_t*)priv->priv)->refcount);
+}
+#pragma GCC diagnostic pop
+
+static inline void end_csession(apr_config_t *cfg)
+{
+  AN(cfg);
+  apr_atomic_dec32(&cfg->refcount);
+}
+
 void vmod_init(struct sess *sp, struct vmod_priv *priv)
 {
   if(priv->priv)
@@ -228,21 +281,9 @@ const char *vmod_get(struct sess *sp, struct vmod_priv *priv, const char *key)
 {
   apr_config_t *cfg;
   apr_pool_t *pool;
-  apr_session_t *s;
   void *val = NULL;
 
-  BEGIN_SESSION(sp) {
-    if(!priv->priv) {
-      LOG_T("vmod_get: no priv->priv\n");
-      priv->priv = make_config();
-    }
-    if(!priv->free) {
-      LOG_T("vmod_get: no priv->free\n");
-      priv->free = (vmod_priv_free_f*)free_config;
-    }
-
-    AN(cfg = (apr_config_t*)priv->priv);
-    AN(s = get_session(sp,cfg));
+  BEGIN_CSESSION_FN("vmod_get",sp,priv,cfg,apr_session_t *s) {
     if(s->pool) {
       LOG_T("vmod_get: using session pool, refcount=%u\n",apr_atomic_read32(&cfg->refcount));
       pool = s->pool;
@@ -252,29 +293,19 @@ const char *vmod_get(struct sess *sp, struct vmod_priv *priv, const char *key)
     }
 
     ASSERT_APR(apr_pool_userdata_get(&val,key,pool));
-  } END_SESSION(sp);
+  } END_CSESSION(sp,cfg);
   return val;
 }
 
-void vmod_set(struct sess *sp, struct vmod_priv *priv,
-              const char *key, const char *val)
+void vmod_set(struct sess *sp, struct vmod_priv *priv, const char *key, const char *v, ...)
 {
+  va_list ap;
   apr_config_t *cfg;
   apr_pool_t *pool;
-  apr_session_t *s;
 
-  BEGIN_SESSION(sp) {
-    if(!priv->priv) {
-      LOG_T("vmod_set: no priv->priv\n");
-      priv->priv = make_config();
-    }
-    if(!priv->free) {
-      LOG_T("vmod_set: no priv->free\n");
-      priv->free = (vmod_priv_free_f*)free_config;
-    }
+  BEGIN_CSESSION_FN("vmod_set",sp,priv,cfg,apr_session_t *s) {
+    char buf[8192], *cp, *op;
 
-    AN(cfg = (apr_config_t*)priv->priv);
-    AN(s = get_session(sp,cfg));
     if(s->pool) {
       LOG_T("vmod_set: using session pool, refcount=%u\n",apr_atomic_read32(&cfg->refcount));
       pool = s->pool;
@@ -283,29 +314,33 @@ void vmod_set(struct sess *sp, struct vmod_priv *priv,
       pool = cfg->pool;
     }
 
-    if(!val) val = "";
-    ASSERT_APR(apr_pool_userdata_set(val,key,NULL,pool));
-  } END_SESSION(sp);
+
+    if (v != vrt_magic_string_unset) {
+      op = cp = buf;
+      cp = apr_cpystrn(op,v,sizeof(buf));
+      if(cp && *cp == '\0') {
+        char *arg;
+        unsigned cnt = 0;
+        va_start(ap,v);
+        for(arg = va_arg(ap,char*); arg != vrt_magic_string_end && ((cp-op) < sizeof(buf)-1) && *cp == '\0';
+                                    arg = va_arg(ap,char*)) {
+          cp = apr_cpystrn(cp,arg,(sizeof(buf)-(cp-op)));
+          cnt++;
+        }
+        va_end(ap);
+        assert(*cp == '\0');
+        ASSERT_APR(apr_pool_userdata_set(apr_pstrdup(pool,buf),key,NULL,pool));
+      }
+    }
+  } END_CSESSION(sp,cfg);
 }
 
 void vmod_del(struct sess *sp, struct vmod_priv *priv, const char *key)
 {
   apr_config_t *cfg;
   apr_pool_t *pool;
-  apr_session_t *s;
 
-  BEGIN_SESSION(sp) {
-    if(!priv->priv) {
-      LOG_T("vmod_del: no priv->priv\n");
-      priv->priv = make_config();
-    }
-    if(!priv->free) {
-      LOG_T("vmod_del: no priv->free\n");
-      priv->free = (vmod_priv_free_f*)free_config;
-    }
-
-    AN(cfg = (apr_config_t*)priv->priv);
-    AN(s = get_session(sp,cfg));
+  BEGIN_CSESSION_FN("vmod_del",sp,priv,cfg,apr_session_t *s) {
     if(s->pool) {
       LOG_T("vmod_del: using session pool, refcount=%u\n",apr_atomic_read32(&cfg->refcount));
       pool = s->pool;
@@ -315,26 +350,5 @@ void vmod_del(struct sess *sp, struct vmod_priv *priv, const char *key)
     }
 
     ASSERT_APR(apr_pool_userdata_setn(NULL,key,NULL,pool));
-  } END_SESSION(sp);
-}
-
-void vmod_format(struct sess *sp, struct vmod_priv *priv, const char *key,
-                                                          const char *fmt, ...)
-{
-  va_list ap;
-  apr_config_t *cfg;
-  apr_session_t *s;
-
-  BEGIN_SESSION(sp) {
-    char *val;
-
-    AN(cfg = (apr_config_t*)priv->priv);
-    AN(s = get_session(sp,cfg));
-    AN(s->pool);
-    va_start(ap,fmt);
-    val = apr_pvsprintf(s->pool,fmt,ap);
-    va_end(ap);
-    AN(val);
-    ASSERT_APR(apr_pool_userdata_set(val,key,NULL,s->pool));
-  } END_SESSION(sp);
+  } END_CSESSION(sp,cfg);
 }
