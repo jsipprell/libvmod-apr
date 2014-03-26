@@ -27,7 +27,7 @@
     decl = begin_csession((sp),(priv),&(cfg),(fn)); do
 
 #define END_SESSION(sp) while(0); WS_Release((sp)->wrk->ws,0)
-#define END_CSESSION(sp,cfg) while(0); end_csession(cfg); } END_SESSION(sp)
+#define END_CSESSION(sp,cfg,s) while(0); end_csession(cfg,s); } END_SESSION(sp)
 
 static apr_status_t indirect_wipe(void*);
 
@@ -40,6 +40,7 @@ typedef struct {
 
 typedef struct {
   apr_pool_t *pool;
+  apr_thread_mutex_t *mutex;
   apr_int64_t id,xid;
 } apr_session_t;
 
@@ -48,20 +49,40 @@ static apr_thread_mutex_t *global_mutex = NULL;
 static volatile apr_uint32_t initialized = 0;
 static volatile apr_uint32_t total_configs = 0;
 
-static inline void set_empty_session(apr_session_t *s)
+static inline void set_empty_session(apr_session_t *s, apr_pool_t *pool)
 {
   s->pool = NULL;
+  s->mutex = NULL;
   s->id = s->xid = APR_INT64_C(-1);
+
+  if (s->mutex == NULL) {
+    ASSERT_APR(apr_thread_mutex_create(&s->mutex,APR_THREAD_MUTEX_DEFAULT,pool));
+    INDIRECT_CLEANUP(pool,s->mutex);
+  }
 }
 
-static apr_int64_t set_session(const struct sess *sp, apr_session_t *s, apr_config_t *cfg)
+static apr_int64_t set_session(const struct sess *sp, apr_session_t *s, apr_config_t *cfg,
+                                                                              int locked)
 {
   apr_int64_t i = APR_INT64_C(-1);
 
+  AN(s->mutex);
+  ASSERT_APR(apr_thread_mutex_lock(s->mutex));
   if(s->xid > APR_INT64_C(-1) && sp && s->xid == sp->xid) {
     assert(s->id == sp->id);
     LOG_T("session reuse (0x%" APR_UINT64_T_HEX_FMT ")\n",s->xid);
-    return s->id;
+    if(s->pool == NULL) {
+      AN(cfg);
+      AN(cfg->pool);
+      LOG_T("session's pool has been destroyed, creating a new one for xid 0x%" APR_UINT64_T_HEX_FMT "\n",
+            (apr_uint64_t)sp->xid);
+      ASSERT_APR(apr_pool_create(&s->pool,cfg->pool));
+      INDIRECT_CLEANUP(s->pool,s->pool);
+    }
+    i = s->id;
+    if(!locked)
+      ASSERT_APR(apr_thread_mutex_unlock(s->mutex));
+    return i;
   } else {
     LOG_T("session mismatch, discarding (0x%" APR_UINT64_T_HEX_FMT " != 0x%"
           APR_UINT64_T_HEX_FMT ")\n",s->xid,(apr_uint64_t)sp->xid)
@@ -83,22 +104,29 @@ static apr_int64_t set_session(const struct sess *sp, apr_session_t *s, apr_conf
     s->id = s->xid = i;
   }
 
+  if(!locked)
+    ASSERT_APR(apr_thread_mutex_unlock(s->mutex));
   return i;
 }
 
-static apr_session_t *get_session(const struct sess *sp, apr_config_t *cfg)
+static apr_session_t *get_session(const struct sess *sp, apr_config_t *cfg, int locked)
 {
   apr_int64_t i = APR_INT64_C(-1);
   apr_session_t *s;
 
-  while(cfg->sessions->nelts <= sp->id) {
-    set_empty_session(&APR_ARRAY_PUSH(cfg->sessions,apr_session_t));
+  ASSERT_APR(apr_thread_mutex_lock(global_mutex));
+
+  if(cfg->sessions->nelts <= sp->id) {
+    while(cfg->sessions->nelts <= sp->id) {
+      set_empty_session(&APR_ARRAY_PUSH(cfg->sessions,apr_session_t),cfg->pool);
+    }
   }
 
   assert(cfg->sessions->nelts > sp->id);
   s = &APR_ARRAY_IDX(cfg->sessions,sp->id,apr_session_t);
-  i = set_session(sp,s,cfg);
+  i = set_session(sp,s,cfg,locked);
   assert(i == sp->id);
+  ASSERT_APR(apr_thread_mutex_unlock(global_mutex));
   return s;
 }
 
@@ -246,12 +274,12 @@ static inline apr_session_t *begin_csession_ndebug(struct sess *sp, struct vmod_
   apr_atomic_inc32(&cfg->refcount);
 #ifdef DEBUG
   do {
-    apr_session_t *s = get_session(sp,cfg);
+    apr_session_t *s = get_session(sp,cfg,1);
     AN(s);
     return s;
   } while(0);
 #else
-  return get_session(sp,cfg);
+  return get_session(sp,cfg,1);
 #endif
 }
 
@@ -264,10 +292,14 @@ static inline void end_session(struct vmod_priv *priv)
 }
 #pragma GCC diagnostic pop
 
-static inline void end_csession(apr_config_t *cfg)
+static inline void end_csession(apr_config_t *cfg, apr_session_t *s)
 {
   AN(cfg);
   apr_atomic_dec32(&cfg->refcount);
+  AN(s);
+  if(s->mutex) {
+    ASSERT_APR(apr_thread_mutex_unlock(s->mutex));
+  }
 }
 
 void vmod_init(struct sess *sp, struct vmod_priv *priv)
@@ -293,7 +325,7 @@ const char *vmod_get(struct sess *sp, struct vmod_priv *priv, const char *key)
     }
 
     ASSERT_APR(apr_pool_userdata_get(&val,key,pool));
-  } END_CSESSION(sp,cfg);
+  } END_CSESSION(sp,cfg,s);
   return val;
 }
 
@@ -307,7 +339,8 @@ void vmod_set(struct sess *sp, struct vmod_priv *priv, const char *key, const ch
     char buf[8192], *cp, *op;
 
     if(s->pool) {
-      LOG_T("vmod_set: using session pool, refcount=%u\n",apr_atomic_read32(&cfg->refcount));
+      LOG_T("vmod_set: using session pool 0x%" APR_UINT64_T_HEX_FMT ", refcount=%u\n",
+            (apr_uint64_t)s->pool,apr_atomic_read32(&cfg->refcount));
       pool = s->pool;
     } else {
       LOG_T("vmod_set: using GLOBAL configuration pool, refcount=%u\n",apr_atomic_read32(&cfg->refcount));
@@ -315,7 +348,9 @@ void vmod_set(struct sess *sp, struct vmod_priv *priv, const char *key, const ch
     }
 
 
-    if (v != vrt_magic_string_unset) {
+    if (v == NULL) {
+      ASSERT_APR(apr_pool_userdata_set(apr_pstrdup(pool,"(null)"),key,NULL,pool));
+    } else if (v != NULL && v != vrt_magic_string_unset) {
       op = cp = buf;
       cp = apr_cpystrn(op,v,sizeof(buf));
       if(cp && *cp == '\0') {
@@ -324,7 +359,7 @@ void vmod_set(struct sess *sp, struct vmod_priv *priv, const char *key, const ch
         va_start(ap,v);
         for(arg = va_arg(ap,char*); arg != vrt_magic_string_end && ((cp-op) < sizeof(buf)-1) && *cp == '\0';
                                     arg = va_arg(ap,char*)) {
-          cp = apr_cpystrn(cp,arg,(sizeof(buf)-(cp-op)));
+          cp = apr_cpystrn(cp,arg ? arg : "(null)",(sizeof(buf)-(cp-op)));
           cnt++;
         }
         va_end(ap);
@@ -332,7 +367,7 @@ void vmod_set(struct sess *sp, struct vmod_priv *priv, const char *key, const ch
         ASSERT_APR(apr_pool_userdata_set(apr_pstrdup(pool,buf),key,NULL,pool));
       }
     }
-  } END_CSESSION(sp,cfg);
+  } END_CSESSION(sp,cfg,s);
 }
 
 void vmod_del(struct sess *sp, struct vmod_priv *priv, const char *key)
@@ -350,5 +385,30 @@ void vmod_del(struct sess *sp, struct vmod_priv *priv, const char *key)
     }
 
     ASSERT_APR(apr_pool_userdata_setn(NULL,key,NULL,pool));
-  } END_CSESSION(sp,cfg);
+  } END_CSESSION(sp,cfg,s);
 }
+
+void vmod_destroy(struct sess *sp, struct vmod_priv *priv)
+{
+  apr_config_t *cfg;
+  BEGIN_CSESSION_FN("vmod_destroy",sp,priv,cfg,apr_session_t *s) {
+    if(s->pool) {
+      LOG_T("destroying session pool for xid 0x%" APR_UINT64_T_HEX_FMT "\n",(apr_uint64_t)sp->xid);
+      apr_pool_destroy(s->pool);
+    }
+  } END_CSESSION(sp,cfg,s);
+}
+
+void vmod_clear(struct sess *sp, struct vmod_priv *priv)
+{
+  apr_config_t *cfg;
+  BEGIN_CSESSION_FN("vmod_destroy",sp,priv,cfg,apr_session_t *s) {
+    if(s->pool) {
+      LOG_T("clearing session pool for xid 0x%" APR_UINT64_T_HEX_FMT "\n",(apr_uint64_t)sp->xid);
+      KILL_INDIRECT_CLEANUP(s->pool,s->pool);
+      apr_pool_clear(s->pool);
+      INDIRECT_CLEANUP(s->pool,s->pool);
+    }
+  } END_CSESSION(sp,cfg,s);
+}
+
