@@ -15,6 +15,7 @@ typedef void td_apr_set(struct sess *, struct vmod_priv *, const char *, const c
 typedef void td_apr_del(struct sess *, struct vmod_priv *, const char *);
 typedef void td_apr_destroy(struct sess *, struct vmod_priv *);
 typedef void td_apr_clear(struct sess *, struct vmod_priv *);
+typedef void td_apr_set_client_ip(struct sess *, const char *);
 
 const char Vmod_Name[] = "apr";
 const struct Vmod_Func_apr {
@@ -24,6 +25,7 @@ const struct Vmod_Func_apr {
 	td_apr_del	*del;
 	td_apr_destroy	*destroy;
 	td_apr_clear	*clear;
+	td_apr_set_client_ip	*set_client_ip;
 	vmod_init_f	*_init;
 } Vmod_Func = {
 	vmod_init,
@@ -32,6 +34,7 @@ const struct Vmod_Func_apr {
 	vmod_del,
 	vmod_destroy,
 	vmod_clear,
+	vmod_set_client_ip,
 	init_function,
 };
 
@@ -44,6 +47,7 @@ const char Vmod_Proto[] =
 	"typedef void td_apr_del(struct sess *, struct vmod_priv *, const char *);\n"
 	"typedef void td_apr_destroy(struct sess *, struct vmod_priv *);\n"
 	"typedef void td_apr_clear(struct sess *, struct vmod_priv *);\n"
+	"typedef void td_apr_set_client_ip(struct sess *, const char *);\n"
 	"\n"
 	"struct Vmod_Func_apr {\n"
 	"	td_apr_init	*init;\n"
@@ -52,6 +56,7 @@ const char Vmod_Proto[] =
 	"	td_apr_del	*del;\n"
 	"	td_apr_destroy	*destroy;\n"
 	"	td_apr_clear	*clear;\n"
+	"	td_apr_set_client_ip	*set_client_ip;\n"
 	"	vmod_init_f	*_init;\n"
 	"} Vmod_Func_apr;\n"
 	;
@@ -63,6 +68,7 @@ const char * const Vmod_Spec[] = {
 	"apr.del\0Vmod_Func_apr.del\0VOID\0PRIV_VCL\0STRING\0",
 	"apr.destroy\0Vmod_Func_apr.destroy\0VOID\0PRIV_VCL\0",
 	"apr.clear\0Vmod_Func_apr.clear\0VOID\0PRIV_VCL\0",
+	"apr.set_client_ip\0Vmod_Func_apr.set_client_ip\0VOID\0STRING\0",
 	"INIT\0Vmod_Func_apr._init",
 	0
 };

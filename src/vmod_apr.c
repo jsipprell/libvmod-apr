@@ -1,4 +1,6 @@
 #include "vmod_apr.h"
+#include <sys/socket.h>
+#include <netdb.h>
 
 #define LOG_E(...) fprintf(stderr, __VA_ARGS__);
 #ifdef DEBUG
@@ -7,6 +9,9 @@
 # define LOG_T(...) do {} while(0);
 #endif
 
+#ifndef LIST_DELIMS
+#define LIST_DELIMS " \t;,"
+#endif
 
 #ifdef DEBUG
 #define begin_csession begin_csession_debug
@@ -412,3 +417,56 @@ void vmod_clear(struct sess *sp, struct vmod_priv *priv)
   } END_CSESSION(sp,cfg,s);
 }
 
+typedef struct {
+  struct addrinfo *addr;
+  apr_int64_t xid;
+} client_ip_t;
+
+/* function to set client.ip */
+static unsigned set_client_ip(struct sess *sp, const char *ipstr)
+{
+  struct addrinfo hints, *rp = NULL;;
+  int rc = 0;
+
+  AN(sp);
+  AN(ipstr);
+
+  memset(&hints,0,sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_flags = AI_NUMERICHOST;
+
+  if((rc = getaddrinfo(ipstr, NULL, &hints, &rp)) != 0) {
+    VSL(SLT_VCL_Log,0,"apr.set_client_ip unable to turn '%s' into an IP address.",ipstr);
+    VSL(SLT_VCL_Log,0,"getaddrinfo(): %s",gai_strerror(rc));
+  } else {
+    AN(rp);
+    if(sp->sockaddrlen >= rp->ai_addrlen) {
+      sp->sockaddrlen = rp->ai_addrlen;
+      memcpy(sp->sockaddr,rp->ai_addr,rp->ai_addrlen);
+    } else {
+      VSL(SLT_VCL_Log,0,"apr.set_client_ip mismatch in address sizes for '%s' (%u != %u)",
+                      ipstr,(unsigned)sp->sockaddrlen,rp->ai_addrlen);
+    }
+  }
+
+  if(rp)
+    freeaddrinfo(rp);
+
+  return (rc == 0);
+}
+
+/* function to set client.ip */
+void vmod_set_client_ip(struct sess *sp, const char *ipstr)
+{
+  char buf[8192], *tok = NULL;
+  unsigned rc = 0;
+
+  if((tok = apr_cpystrn(buf,ipstr,sizeof(buf))) != NULL && *tok == '\0') {
+    char *state;
+
+    for(tok = apr_strtok(buf,LIST_DELIMS,&state); tok != NULL && rc == 0; 
+                              tok = apr_strtok(NULL,LIST_DELIMS,&state)) {
+      rc = set_client_ip(sp,tok);
+    }
+  }
+}
